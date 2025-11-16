@@ -3,8 +3,8 @@ package com.alibaba.datax.common.util;
 import com.alibaba.datax.common.exception.CommonErrorCode;
 import com.alibaba.datax.common.exception.DataXException;
 import com.alibaba.datax.common.spi.ErrorCode;
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.serializer.SerializerFeature;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONWriter;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.CharUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -411,6 +411,15 @@ public class Configuration {
 		return list;
 	}
 
+	public <T> List<T> getListWithJson(final String path, Class<T> t) {
+		Object object = this.get(path, List.class);
+		if (null == object) {
+			return null;
+		}
+
+		return JSON.parseArray(JSON.toJSONString(object),t);
+	}
+
 	/**
 	 * 根据用户提供的json path，寻址List对象，如果对象不存在，返回null
 	 */
@@ -577,7 +586,7 @@ public class Configuration {
 	 */
 	public String beautify() {
 		return JSON.toJSONString(this.getInternal(),
-				SerializerFeature.PrettyFormat);
+				JSONWriter.Feature.PrettyFormat);
 	}
 
 	/**
@@ -1038,7 +1047,7 @@ public class Configuration {
 					"系统编程错误, 该异常代表系统编程错误, 请联系DataX开发团队!.");
 		}
 
-		for (final String each : StringUtils.split(".")) {
+		for (final String each : StringUtils.split(path, ".")) {
 			if (StringUtils.isBlank(each)) {
 				throw new IllegalArgumentException(String.format(
 						"系统编程错误, 路径[%s]不合法, 路径层次之间不能出现空白字符 .", path));

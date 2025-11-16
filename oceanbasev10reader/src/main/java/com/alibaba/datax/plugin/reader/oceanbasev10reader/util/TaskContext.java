@@ -19,6 +19,15 @@ public class TaskContext {
     private boolean weakRead = true;
     private String userSavePoint;
     private String compatibleMode = ObReaderUtils.OB_COMPATIBLE_MODE_MYSQL;
+
+    public String getPartitionName() {
+        return partitionName;
+    }
+
+    public void setPartitionName(String partitionName) {
+        this.partitionName = partitionName;
+    }
+
     private String partitionName;
 
     // 断点续读的保存点
@@ -71,8 +80,10 @@ public class TaskContext {
     }
 
     public String getQuerySql() {
-        if (readBatchSize == -1 || ObReaderUtils.isOracleMode(compatibleMode)) {
+        if (readBatchSize == -1) {
             return querySql;
+        } else if (ObReaderUtils.isOracleMode(compatibleMode)) {
+            return String.format("select * from (%s) where rownum <= %d", querySql, readBatchSize);
         } else {
             return querySql + " limit " + readBatchSize;
         }
@@ -164,13 +175,5 @@ public class TaskContext {
 
     public void setCompatibleMode(String compatibleMode) {
         this.compatibleMode = compatibleMode;
-    }
-
-    public String getPartitionName() {
-        return partitionName;
-    }
-
-    public void setPartitionName(String partitionName) {
-        this.partitionName = partitionName;
     }
 }

@@ -8,8 +8,8 @@ import com.alibaba.datax.common.plugin.TaskPluginCollector;
 import com.alibaba.datax.common.util.Configuration;
 import com.alibaba.datax.plugin.unstructuredstorage.util.ColumnTypeUtil;
 import com.alibaba.datax.plugin.unstructuredstorage.util.HdfsUtil;
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import com.google.common.collect.Lists;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Validate;
@@ -27,11 +27,11 @@ import org.apache.hadoop.mapred.*;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import parquet.schema.OriginalType;
-import parquet.schema.PrimitiveType;
-import parquet.schema.Types;
+import parquet.hadoop.metadata.CompressionCodecName;
+import parquet.schema.*;
 
 import java.io.IOException;
+import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -441,7 +441,7 @@ public  class HdfsHelper {
                     objectInspector = ObjectInspectorFactory.getReflectionObjectInspector(Double.class, ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
                     break;
                 case TIMESTAMP:
-                    objectInspector = ObjectInspectorFactory.getReflectionObjectInspector(java.sql.Timestamp.class, ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
+                    objectInspector = ObjectInspectorFactory.getReflectionObjectInspector(org.apache.hadoop.hive.common.type.Timestamp.class, ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
                     break;
                 case DATE:
                     objectInspector = ObjectInspectorFactory.getReflectionObjectInspector(java.sql.Date.class, ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
@@ -534,7 +534,13 @@ public  class HdfsHelper {
                                 recordList.add(new java.sql.Date(column.asDate().getTime()));
                                 break;
                             case TIMESTAMP:
-                                recordList.add(new java.sql.Timestamp(column.asDate().getTime()));
+                                Date date = column.asDate();
+                                if (date == null) {
+                                    recordList.add(null);
+                                } else {
+                                    Timestamp ts = new Timestamp(date.getTime());
+                                    recordList.add(org.apache.hadoop.hive.common.type.Timestamp.ofEpochMilli(ts.getTime(), ts.getNanos()));
+                                }
                                 break;
                             default:
                                 throw DataXException
@@ -626,4 +632,68 @@ public  class HdfsHelper {
         }
         return typeBuilder.named("m").toString();
     }
+
+    public void parquetFileStartWrite(RecordReceiver lineReceiver, Configuration config, String fileName, TaskPluginCollector taskPluginCollector, Configuration taskConfig) {
+        MessageType messageType = null;
+        ParquetFileProccessor proccessor = null;
+        Path outputPath = new Path(fileName);
+        String schema = config.getString(Key.PARQUET_SCHEMA, null);
+        if (schema == null) {
+            List<Configuration> columns = config.getListConfiguration(Key.COLUMN);
+            if (columns == null || columns.isEmpty()) {
+                throw DataXException.asDataXException("parquetSchema or column can't be blank!");
+            }
+            schema = HdfsHelper.generateParquetSchemaFromColumnAndType(columns);
+        }
+        try {
+            messageType = MessageTypeParser.parseMessageType(schema);
+        } catch (Exception e) {
+            String message = String.format("Error parsing the Schema string [%s] into MessageType", schema);
+            LOG.error(message);
+            throw DataXException.asDataXException(HdfsWriterErrorCode.PARSE_MESSAGE_TYPE_FROM_SCHEMA_ERROR, e);
+        }
+
+        // determine the compression codec
+        String compress = config.getString(Key.COMPRESS, null);
+        // be compatible with the old NONE
+        if ("NONE".equalsIgnoreCase(compress)) {
+            compress = "UNCOMPRESSED";
+        }
+        CompressionCodecName compressionCodecName = CompressionCodecName.fromConf(compress);
+        LOG.info("The compression codec used for parquet writing is: {}", compressionCodecName, compress);
+        try {
+            proccessor = new ParquetFileProccessor(outputPath, messageType, compressionCodecName, false, taskConfig, taskPluginCollector, hadoopConf);
+        } catch (Exception e) {
+            String message = String.format("Initializing ParquetFileProccessor based on Schema[%s] failed.", schema);
+            LOG.error(message);
+            throw DataXException.asDataXException(HdfsWriterErrorCode.INIT_PROCCESSOR_FAILURE, e);
+        }
+        SimpleDateFormat dateFormat = new SimpleDateFormat("yyyyMMddHHmm");
+        String attempt = "attempt_" + dateFormat.format(new Date()) + "_0001_m_000000_0";
+        conf.set(JobContext.TASK_ATTEMPT_ID, attempt);
+        FileOutputFormat outFormat = new TextOutputFormat();
+        outFormat.setOutputPath(conf, outputPath);
+        outFormat.setWorkOutputPath(conf, outputPath);
+        try {
+            Record record = null;
+            while ((record = lineReceiver.getFromReader()) != null) {
+                proccessor.write(record);
+            }
+        } catch (Exception e) {
+            String message = String.format("An exception occurred while writing the file file [%s]", fileName);
+            LOG.error(message);
+            Path path = new Path(fileName);
+            deleteDir(path.getParent());
+            throw DataXException.asDataXException(HdfsWriterErrorCode.Write_FILE_IO_ERROR, e);
+        } finally {
+            if (proccessor != null) {
+                try {
+                    proccessor.close();
+                } catch (IOException e) {
+                    LOG.error(e.getMessage(), e);
+                }
+            }
+        }
+    }
+
 }

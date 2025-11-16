@@ -1,79 +1,116 @@
 package com.alibaba.datax.plugin.writer.oceanbasev10writer.ext;
 
+import static org.apache.commons.lang3.StringUtils.EMPTY;
+
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.alibaba.datax.common.util.Configuration;
+
 public class ServerConnectInfo {
-	
-	public String clusterName;
-	public String tenantName;
-	public String userName;
-	public String password;
-	public String databaseName;
-	public String ipPort;
-	public String jdbcUrl;
 
-	public ServerConnectInfo(final String jdbcUrl, final String username, final String password) {
-		if (jdbcUrl.startsWith(com.alibaba.datax.plugin.rdbms.writer.Constant.OB10_SPLIT_STRING)) {
-			String[] ss = jdbcUrl.split(com.alibaba.datax.plugin.rdbms.writer.Constant.OB10_SPLIT_STRING_PATTERN);
-			if (ss.length != 3) {
-				throw new RuntimeException("jdbc url format is not correct: " + jdbcUrl);
-			}
-			this.userName = username;
-			this.clusterName = ss[1].trim().split(":")[0];
-			this.tenantName  = ss[1].trim().split(":")[1];
-			this.jdbcUrl = ss[2].replace("jdbc:mysql:", "jdbc:oceanbase:");
-		} else {
-			this.jdbcUrl = jdbcUrl.replace("jdbc:mysql:", "jdbc:oceanbase:");
-			if (username.contains("@") && username.contains("#")) {
-				this.userName = username.substring(0, username.indexOf("@"));
-				this.tenantName = username.substring(username.indexOf("@") + 1, username.indexOf("#"));
-				this.clusterName = username.substring(username.indexOf("#") + 1);
-			} else if (username.contains(":")) {
-				String[] config = username.split(":");
-				if (config.length != 3) {
-					throw new RuntimeException ("username format is not correct: " + username);
-				}
-				this.clusterName = config[0];
-				this.tenantName = config[1];
-				this.userName = config[2];
-			} else {
-				this.clusterName = null;
-				this.tenantName = null;
-				this.userName = username;
-			}
-		}
+    public String clusterName;
+    public String tenantName;
+    // userName doesn't contain tenantName or clusterName
+    public String userName;
+    public String password;
+    public String databaseName;
+    public String ipPort;
+    public String jdbcUrl;
+    public String host;
+    public String port;
+    public boolean publicCloud;
+    public int rpcPort;
+    public Configuration config;
 
-		this.password = password;
-		parseJdbcUrl(jdbcUrl);
-	}
+    public ServerConnectInfo(final String jdbcUrl, final String username, final String password, Configuration config) {
+        this.jdbcUrl = jdbcUrl;
+        this.password = password;
+        this.config = config;
+        parseJdbcUrl(jdbcUrl);
+        parseFullUserName(username);
+    }
 
-	private void parseJdbcUrl(final String jdbcUrl) {
-		Pattern pattern = Pattern.compile("//([\\w\\.\\-]+:\\d+)/([\\w-]+)\\?");
-		Matcher matcher = pattern.matcher(jdbcUrl);
-		if (matcher.find()) {
-			String ipPort = matcher.group(1);
-			String dbName = matcher.group(2);
-			this.ipPort = ipPort;
-			this.databaseName = dbName;
-		} else {
-			throw new RuntimeException("Invalid argument:" + jdbcUrl);
-		}
-	}
+    private void parseJdbcUrl(final String jdbcUrl) {
+        Pattern pattern = Pattern.compile("//([\\w\\.\\-]+:\\d+)/([^\\\\?]*)");
+        Matcher matcher = pattern.matcher(jdbcUrl);
+        if (matcher.find()) {
+            String ipPort = matcher.group(1);
+            String dbName = matcher.group(2);
+            this.ipPort = ipPort;
+            this.host = ipPort.split(":")[0];
+            this.port = ipPort.split(":")[1];
+            this.databaseName = dbName;
+            this.publicCloud = host.endsWith("aliyuncs.com");
+        } else {
+            throw new RuntimeException("Invalid argument:" + jdbcUrl);
+        }
+    }
 
-	public String toString() {
-		StringBuffer strBuffer = new StringBuffer();
-		return strBuffer.append("clusterName:").append(clusterName).append(", tenantName:").append(tenantName)
-				.append(", userName:").append(userName).append(", databaseName:").append(databaseName)
-				.append(", ipPort:").append(ipPort).append(", jdbcUrl:").append(jdbcUrl).toString();
-	}
+    protected void parseFullUserName(final String fullUserName) {
+        int tenantIndex = fullUserName.indexOf("@");
+        int clusterIndex = fullUserName.indexOf("#");
+        // 适用于jdbcUrl以||_dsc_ob10_dsc_开头的场景
+        if (fullUserName.contains(":") && tenantIndex < 0) {
+            String[] names = fullUserName.split(":");
+            if (names.length != 3) {
+                throw new RuntimeException("invalid argument: " + fullUserName);
+            } else {
+                this.clusterName = names[0];
+                this.tenantName = names[1];
+                this.userName = names[2];
+            }
+        } else if (tenantIndex < 0) {
+            // 适用于short jdbcUrl，且username中不含租户名（主要是公有云场景，此场景下不计算分区）
+            this.userName = fullUserName;
+            this.clusterName = EMPTY;
+            this.tenantName = EMPTY;
+        } else {
+            // 适用于short jdbcUrl，且username中含租户名
+            this.userName = fullUserName.substring(0, tenantIndex);
+            if (clusterIndex < 0) {
+                this.clusterName = EMPTY;
+                this.tenantName = fullUserName.substring(tenantIndex + 1);
+            } else {
+                this.clusterName = fullUserName.substring(clusterIndex + 1);
+                this.tenantName = fullUserName.substring(tenantIndex + 1, clusterIndex);
+            }
+        }
+    }
 
-	public String getFullUserName() {
-		StringBuilder builder = new StringBuilder(userName);
-		if (tenantName != null && clusterName != null) {
-			builder.append("@").append(tenantName).append("#").append(clusterName);
-		}
+    @Override
+    public String toString() {
+        return "ServerConnectInfo{" +
+                "clusterName='" + clusterName + '\'' +
+                ", tenantName='" + tenantName + '\'' +
+                ", userName='" + userName + '\'' +
+                ", password='" + password + '\'' +
+                ", databaseName='" + databaseName + '\'' +
+                ", ipPort='" + ipPort + '\'' +
+                ", jdbcUrl='" + jdbcUrl + '\'' +
+                ", host='" + host + '\'' +
+                ", publicCloud=" + publicCloud +
+                ", rpcPort=" + rpcPort +
+                '}';
+    }
 
-		return builder.toString();
-	}
+    public String getFullUserName() {
+        StringBuilder builder = new StringBuilder();
+        builder.append(userName);
+        if (!EMPTY.equals(tenantName)) {
+            builder.append("@").append(tenantName);
+        }
+
+        if (!EMPTY.equals(clusterName)) {
+            builder.append("#").append(clusterName);
+        }
+        if (EMPTY.equals(this.clusterName) && EMPTY.equals(this.tenantName)) {
+            return this.userName;
+        }
+        return builder.toString();
+    }
+
+    public void setRpcPort(int rpcPort) {
+        this.rpcPort = rpcPort;
+    }
 }
